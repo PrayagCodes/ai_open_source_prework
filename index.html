@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MMORPG Game Client</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div class="help-container">
+        <button id="helpButton" title="Hover for help">?</button>
+        <div id="helpModal">
+        <h2>Game Features Guide</h2>
+        
+        <div class="feature-section">
+            <h3>Movement Controls</h3>
+            <ul class="feature-list">
+                <li>Use Arrow Keys to move your character</li>
+                <li>Hold keys for continuous movement</li>
+                <li>Your character faces the direction of movement</li>
+            </ul>
+        </div>
+        
+        <div class="feature-section">
+            <h3>Player List</h3>
+            <ul class="feature-list">
+                <li>Shows all online players</li>
+                <li>Your name is highlighted in green</li>
+                <li>Click any player to enable navigation</li>
+            </ul>
+        </div>
+        
+        <div class="feature-section">
+            <h3>Navigation System</h3>
+            <ul class="feature-list">
+                <li>Click a player's name to select them</li>
+                <li>Blue arrow on radar points to selected player</li>
+                <li>Blue dot shows their position when in range</li>
+                <li>Edge indicator shows direction when out of range</li>
+            </ul>
+        </div>
+        
+        <div class="feature-section">
+            <h3>Radar Display</h3>
+            <ul class="feature-list">
+                <li>Shows nearby players within range</li>
+                <li>You appear as a green dot in the center</li>
+                <li>Other players appear as white dots</li>
+                <li>Selected player appears as a blue dot</li>
+            </ul>
+        </div>
+        
+        <div class="feature-section">
+            <h3>Player Info</h3>
+            <ul class="feature-list">
+                <li>Shows your connection status</li>
+                <li>Displays your current position</li>
+                <li>Shows your facing direction</li>
+                <li>Indicates if you're moving</li>
+            </ul>
+        </div>
+    </div>
+    </div>
+    <div id="playerList">
+        <h3>Players Online <span class="player-count">(0)</span></h3>
+        <div id="playerListContent"></div>
+    </div>
+    <div id="radar">
+        <canvas id="radarCanvas"></canvas>
+    </div>
+    <div id="playerInfo">
+        <h3>Player Info</h3>
+        <div class="info-item">
+            <span class="info-label">Status</span>
+            <span class="info-value">
+                <span class="connection-status disconnected"></span>
+                Disconnected
+            </span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Username</span>
+            <span class="info-value">-</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Position</span>
+            <span class="info-value">x: -, y: -</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Facing</span>
+            <span class="info-value">-</span>
+        </div>
+        <div class="info-item">
+            <span class="info-label">Moving</span>
+            <span class="info-value">No</span>
+        </div>
+    </div>
+    
+    <script>
+        // Game canvas and context
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Radar canvas and context
+        const radarCanvas = document.getElementById('radarCanvas');
+        const radarCtx = radarCanvas.getContext('2d');
+        const RADAR_RADIUS = 300; // Game units to show on radar
+        
+        // World map image
+        const worldImage = new Image();
+        
+        // Game state
+        let gameState = {
+            playerId: null,
+            players: {},
+            avatars: {},
+            myPlayer: null,
+            viewport: { x: 0, y: 0 },
+            selectedPlayerId: null  // Track which player we're navigating to
+        };
+        
+        // WebSocket connection
+        let ws = null;
+        
+        // Movement state
+        let movementKeys = {
+            up: false,
+            down: false,
+            left: false,
+            right: false
+        };
+        
+        let currentDirection = null;
+        let movementInterval = null;
+        const MOVEMENT_SPEED = 100; // milliseconds between move commands
+        
+        // Canvas setup - fill the browser window
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            drawWorld();
+        }
+        
+        // WebSocket functions
+        function connectToServer() {
+            ws = new WebSocket('wss://codepath-mmorg.onrender.com');
+            
+            ws.onopen = function() {
+                console.log('Connected to game server');
+                updateConnectionStatus(true);
+                joinGame();
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                handleServerMessage(message);
+            };
+            
+            ws.onclose = function() {
+                console.log('Disconnected from game server');
+                updateConnectionStatus(false);
+                if (movementInterval) {
+                    clearInterval(movementInterval);
+                    movementInterval = null;
+                }
+                // Clean up movement interval on disconnect
+                if (movementInterval) {
+                    clearInterval(movementInterval);
+                    movementInterval = null;
+                }
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        function joinGame() {
+            const joinMessage = {
+                action: "join_game",
+                username: "Prayag"
+            };
+            ws.send(JSON.stringify(joinMessage));
+            console.log('Sent join game request');
+        }
+        
+        function handleServerMessage(message) {
+            console.log('Received message:', message);
+            
+            switch(message.action) {
+                case 'join_game':
+                    if (message.success) {
+                        gameState.playerId = message.playerId;
+                        gameState.players = message.players;
+                        gameState.avatars = message.avatars;
+                        gameState.myPlayer = message.players[message.playerId];
+                        
+                        console.log('Joined game successfully!');
+                        console.log('My player:', gameState.myPlayer);
+                        
+                        // Load avatar images and start rendering
+                        loadAvatarImages();
+                        
+                        // Initialize player info
+                        updatePlayerInfo();
+                    } else {
+                        console.error('Failed to join game:', message.error);
+                    }
+                    break;
+                
+                case 'move':
+                    if (!message.success) {
+                        console.error('Move failed:', message.error);
+                        // Clear movement if it failed
+                        if (movementInterval) {
+                            clearInterval(movementInterval);
+                            movementInterval = null;
+                        }
+                        currentDirection = null;
+                        Object.keys(movementKeys).forEach(key => movementKeys[key] = false);
+                    }
+                    break;
+                    
+                case 'players_moved':
+                    // Update player positions
+                    Object.assign(gameState.players, message.players);
+                    if (gameState.playerId && message.players[gameState.playerId]) {
+                        gameState.myPlayer = message.players[gameState.playerId];
+                    }
+                    break;
+                    
+                case 'player_joined':
+                    gameState.players[message.player.id] = message.player;
+                    if (message.avatar) {
+                        gameState.avatars[message.avatar.name] = message.avatar;
+                        loadAvatarImage(message.avatar);
+                    }
+                    break;
+                    
+                case 'player_left':
+                    delete gameState.players[message.playerId];
+                    break;
+                    
+                default:
+                    console.log('Unknown message type:', message.action);
+            }
+            
+            // Redraw the game
+            drawGame();
+        }
+        
+        function loadAvatarImages() {
+            for (const avatarName in gameState.avatars) {
+                loadAvatarImage(gameState.avatars[avatarName]);
+            }
+        }
+        
+        function loadAvatarImage(avatarData) {
+            const avatar = gameState.avatars[avatarData.name];
+            if (!avatar.imageObjects) {
+                avatar.imageObjects = {};
+            }
+            
+            // Load images for each direction
+            for (const direction in avatarData.frames) {
+                if (!avatar.imageObjects[direction]) {
+                    avatar.imageObjects[direction] = [];
+                }
+                
+                avatarData.frames[direction].forEach((frameData, index) => {
+                    const img = new Image();
+                    img.onload = function() {
+                        console.log(`Loaded avatar frame: ${avatarData.name} ${direction} ${index}`);
+                        drawGame();
+                    };
+                    img.src = frameData;
+                    avatar.imageObjects[direction][index] = img;
+                });
+            }
+        }
+        
+        // Draw the world map
+        function drawWorld() {
+            if (worldImage.complete) {
+                // Clear the canvas
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw the world map with viewport offset
+                ctx.drawImage(worldImage, -gameState.viewport.x, -gameState.viewport.y);
+            }
+        }
+        
+        // Update viewport to center on player
+        function updateViewport() {
+            if (gameState.myPlayer) {
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                
+                // Calculate desired viewport position to center player
+                let viewportX = gameState.myPlayer.x - centerX;
+                let viewportY = gameState.myPlayer.y - centerY;
+                
+                // Constrain viewport to map boundaries (0,0 to 2048,2048)
+                viewportX = Math.max(0, Math.min(viewportX, 2048 - canvas.width));
+                viewportY = Math.max(0, Math.min(viewportY, 2048 - canvas.height));
+                
+                gameState.viewport.x = viewportX;
+                gameState.viewport.y = viewportY;
+            }
+        }
+        
+        // Draw a single avatar
+        function drawAvatar(player) {
+            const avatar = gameState.avatars[player.avatar];
+            if (!avatar || !avatar.imageObjects) return;
+            
+            let direction = player.facing;
+            const frameIndex = player.animationFrame || 0;
+            let flipHorizontal = false;
+            
+            // Handle west direction by using east frames flipped horizontally
+            if (direction === 'west') {
+                direction = 'east';
+                flipHorizontal = true;
+            }
+            
+            if (!avatar.imageObjects[direction] || !avatar.imageObjects[direction][frameIndex]) return;
+            
+            const img = avatar.imageObjects[direction][frameIndex];
+            if (!img.complete) return;
+            
+            // Calculate screen position relative to viewport
+            const screenX = player.x - gameState.viewport.x;
+            const screenY = player.y - gameState.viewport.y;
+            
+            // Only draw if avatar is visible on screen
+            if (screenX > -img.width && screenX < canvas.width && 
+                screenY > -img.height && screenY < canvas.height) {
+                
+                // Save canvas state
+                ctx.save();
+                
+                if (flipHorizontal) {
+                    // Flip horizontally for west direction
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(img, -(screenX + img.width), screenY);
+                } else {
+                    // Draw normally
+                    ctx.drawImage(img, screenX, screenY);
+                }
+                
+                // Restore canvas state
+                ctx.restore();
+                
+                // Draw username label above avatar
+                ctx.fillStyle = 'white';
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 2;
+                ctx.font = '14px Arial';
+                ctx.textAlign = 'center';
+                
+                const labelX = screenX + img.width / 2;
+                const labelY = screenY - 5;
+                
+                ctx.strokeText(player.username, labelX, labelY);
+                ctx.fillText(player.username, labelX, labelY);
+            }
+        }
+        
+        // Update connection status in player info
+        function updateConnectionStatus(connected) {
+            const statusDot = document.querySelector('.connection-status');
+            if (!statusDot) return; // Don't update if elements aren't ready
+            
+            const statusValue = statusDot.parentElement;
+            if (!statusValue) return;
+            
+            if (connected) {
+                statusDot.className = 'connection-status connected';
+                // Clear the existing content and set new content
+                statusValue.innerHTML = '';
+                statusValue.appendChild(statusDot);
+                statusValue.appendChild(document.createTextNode('Connected'));
+            } else {
+                statusDot.className = 'connection-status disconnected';
+                // Clear the existing content and set new content
+                statusValue.innerHTML = '';
+                statusValue.appendChild(statusDot);
+                statusValue.appendChild(document.createTextNode('Disconnected'));
+            }
+        }
+        
+        // Update player info panel
+        function updatePlayerInfo() {
+            if (!gameState.myPlayer) return;
+            
+            // Update each info field
+            document.querySelectorAll('.info-item').forEach(item => {
+                const label = item.querySelector('.info-label').textContent.toLowerCase();
+                const valueElement = item.querySelector('.info-value');
+                
+                // Skip the status field which has the connection dot
+                if (valueElement.querySelector('.connection-status')) return;
+                
+                switch(label) {
+                    case 'username':
+                        valueElement.textContent = gameState.myPlayer.username;
+                        break;
+                    case 'position':
+                        valueElement.textContent = `x: ${Math.round(gameState.myPlayer.x)}, y: ${Math.round(gameState.myPlayer.y)}`;
+                        break;
+                    case 'facing':
+                        valueElement.textContent = gameState.myPlayer.facing;
+                        break;
+                    case 'moving':
+                        valueElement.textContent = gameState.myPlayer.isMoving ? 'Yes' : 'No';
+                        break;
+                }
+            });
+        }
+        
+        // Update player list UI
+        function updatePlayerList() {
+            const playerCount = Object.keys(gameState.players).length;
+            const playerListContent = document.getElementById('playerListContent');
+            const playerCountElement = document.querySelector('.player-count');
+            
+            // Update player count
+            playerCountElement.textContent = `(${playerCount})`;
+            
+            // Clear current list
+            playerListContent.innerHTML = '';
+            
+            // Add all players to list
+            Object.values(gameState.players)
+                .sort((a, b) => a.username.localeCompare(b.username))
+                .forEach(player => {
+                    const playerItem = document.createElement('div');
+                    playerItem.className = 'player-item';
+                    if (player.id === gameState.playerId) {
+                        playerItem.className += ' you';
+                    }
+                    if (player.id === gameState.selectedPlayerId) {
+                        playerItem.className += ' selected';
+                    }
+                    playerItem.textContent = player.username;
+                    
+                    // Add click handler for navigation
+                    if (player.id !== gameState.playerId) {
+                        playerItem.addEventListener('click', () => {
+                            if (gameState.selectedPlayerId === player.id) {
+                                // Clicking selected player deselects them
+                                gameState.selectedPlayerId = null;
+                            } else {
+                                // Select the clicked player for navigation
+                                gameState.selectedPlayerId = player.id;
+                            }
+                            updatePlayerList(); // Refresh the list to show selection
+                        });
+                        playerItem.style.cursor = 'pointer';
+                    }
+                    
+                    playerListContent.appendChild(playerItem);
+                });
+        }
+        
+        // Calculate angle between two points
+        function calculateAngle(x1, y1, x2, y2) {
+            return Math.atan2(y2 - y1, x2 - x1);
+        }
+        
+        // Draw navigation arrow
+        function drawNavigationArrow(centerX, centerY, radius, angle) {
+            const arrowLength = 20;
+            const arrowWidth = 8;
+            
+            // Calculate arrow position on circle
+            const x = centerX + Math.cos(angle) * (radius - 2);
+            const y = centerY + Math.sin(angle) * (radius - 2);
+            
+            // Draw arrow
+            radarCtx.save();
+            radarCtx.translate(x, y);
+            radarCtx.rotate(angle);
+            
+            radarCtx.beginPath();
+            radarCtx.moveTo(-arrowLength, -arrowWidth);
+            radarCtx.lineTo(0, 0);
+            radarCtx.lineTo(-arrowLength, arrowWidth);
+            
+            radarCtx.strokeStyle = '#00BFFF';
+            radarCtx.lineWidth = 2;
+            radarCtx.stroke();
+            
+            radarCtx.restore();
+        }
+        
+        // Draw the radar
+        function drawRadar() {
+            if (!gameState.myPlayer) return;
+            
+            // Set up radar canvas size
+            radarCanvas.width = 150;
+            radarCanvas.height = 150;
+            const centerX = radarCanvas.width / 2;
+            const centerY = radarCanvas.height / 2;
+            
+            // Clear radar
+            radarCtx.clearRect(0, 0, radarCanvas.width, radarCanvas.height);
+            
+            // Draw radar background
+            radarCtx.beginPath();
+            radarCtx.arc(centerX, centerY, centerX - 2, 0, Math.PI * 2);
+            radarCtx.fillStyle = 'rgba(0, 20, 40, 0.6)';
+            radarCtx.fill();
+            
+            // Draw radar grid
+            radarCtx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            radarCtx.beginPath();
+            radarCtx.moveTo(centerX, 0);
+            radarCtx.lineTo(centerX, radarCanvas.height);
+            radarCtx.moveTo(0, centerY);
+            radarCtx.lineTo(radarCanvas.width, centerY);
+            radarCtx.stroke();
+            
+            // Draw radar circle
+            radarCtx.beginPath();
+            radarCtx.arc(centerX, centerY, centerX - 2, 0, Math.PI * 2);
+            radarCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            radarCtx.stroke();
+            
+            // Draw nearby players and handle navigation
+            for (const playerId in gameState.players) {
+                const player = gameState.players[playerId];
+                
+                // Calculate relative position to player
+                const dx = player.x - gameState.myPlayer.x;
+                const dy = player.y - gameState.myPlayer.y;
+                
+                // Calculate distance
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                // Draw navigation arrow for selected player
+                if (playerId === gameState.selectedPlayerId) {
+                    const angle = calculateAngle(gameState.myPlayer.x, gameState.myPlayer.y, player.x, player.y);
+                    drawNavigationArrow(centerX, centerY, centerX - 2, angle);
+                }
+                
+                // Draw player dot if within radar radius
+                if (distance <= RADAR_RADIUS) {
+                    // Convert world position to radar position
+                    const radarX = centerX + (dx / RADAR_RADIUS) * (centerX - 4);
+                    const radarY = centerY + (dy / RADAR_RADIUS) * (centerY - 4);
+                    
+                    // Draw player dot
+                    radarCtx.beginPath();
+                    if (playerId === gameState.playerId) {
+                        // Draw player as green dot
+                        radarCtx.fillStyle = '#4CAF50';
+                        radarCtx.arc(radarX, radarY, 4, 0, Math.PI * 2);
+                    } else if (playerId === gameState.selectedPlayerId) {
+                        // Draw selected player as blue dot
+                        radarCtx.fillStyle = '#00BFFF';
+                        radarCtx.arc(radarX, radarY, 4, 0, Math.PI * 2);
+                    } else {
+                        // Draw other players as white dots
+                        radarCtx.fillStyle = 'white';
+                        radarCtx.arc(radarX, radarY, 3, 0, Math.PI * 2);
+                    }
+                    radarCtx.fill();
+                } else if (playerId === gameState.selectedPlayerId) {
+                    // Draw direction indicator at edge of radar for selected player outside range
+                    const angle = calculateAngle(gameState.myPlayer.x, gameState.myPlayer.y, player.x, player.y);
+                    const edgeX = centerX + Math.cos(angle) * (centerX - 4);
+                    const edgeY = centerY + Math.sin(angle) * (centerY - 4);
+                    
+                    radarCtx.beginPath();
+                    radarCtx.fillStyle = '#00BFFF';
+                    radarCtx.arc(edgeX, edgeY, 4, 0, Math.PI * 2);
+                    radarCtx.fill();
+                }
+            }
+        }
+        
+        // Main game drawing function
+        function drawGame() {
+            updateViewport();
+            drawWorld();
+            
+            // Draw all players
+            for (const playerId in gameState.players) {
+                drawAvatar(gameState.players[playerId]);
+            }
+            
+            // Update UI elements
+            updatePlayerList();
+            updatePlayerInfo();
+            drawRadar();
+        }
+        
+        // Movement functions
+        function sendMoveCommand(direction) {
+            if (!gameState.playerId) {
+                console.log('Cannot move: Not joined to game yet');
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const moveMessage = {
+                    action: "move",
+                    direction: direction
+                };
+                ws.send(JSON.stringify(moveMessage));
+                console.log('Sent move command:', direction);
+            }
+        }
+        
+        function sendStopCommand() {
+            if (!gameState.playerId) {
+                console.log('Cannot stop: Not joined to game yet');
+                return;
+            }
+            
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const stopMessage = {
+                    action: "stop"
+                };
+                ws.send(JSON.stringify(stopMessage));
+                console.log('Sent stop command');
+            }
+        }
+        
+        function handleMovementInput() {
+            let newDirection = null;
+            
+            // Determine priority direction (last pressed wins for diagonals)
+            if (movementKeys.up) newDirection = "up";
+            else if (movementKeys.down) newDirection = "down";
+            else if (movementKeys.left) newDirection = "left";
+            else if (movementKeys.right) newDirection = "right";
+            
+            // Handle direction changes
+            if (newDirection !== currentDirection) {
+                // Stop previous movement
+                if (movementInterval) {
+                    clearInterval(movementInterval);
+                    movementInterval = null;
+                }
+                
+                currentDirection = newDirection;
+                
+                if (newDirection) {
+                    // Send initial move command immediately
+                    sendMoveCommand(newDirection);
+                    
+                    // Start continuous movement
+                    movementInterval = setInterval(() => {
+                        sendMoveCommand(currentDirection);
+                    }, MOVEMENT_SPEED);
+                } else {
+                    // Send stop command when no keys are pressed
+                    sendStopCommand();
+                }
+            }
+        }
+        
+        // Keyboard event handlers
+        function handleKeyDown(event) {
+            // Prevent default browser behavior for arrow keys
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) {
+                event.preventDefault();
+            }
+            
+            // Ignore key repeat events
+            if (event.repeat) return;
+            
+            let keyPressed = false;
+            switch(event.code) {
+                case 'ArrowUp':
+                    if (!movementKeys.up) {
+                        movementKeys.up = true;
+                        keyPressed = true;
+                    }
+                    break;
+                case 'ArrowDown':
+                    if (!movementKeys.down) {
+                        movementKeys.down = true;
+                        keyPressed = true;
+                    }
+                    break;
+                case 'ArrowLeft':
+                    if (!movementKeys.left) {
+                        movementKeys.left = true;
+                        keyPressed = true;
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (!movementKeys.right) {
+                        movementKeys.right = true;
+                        keyPressed = true;
+                    }
+                    break;
+            }
+            
+            if (keyPressed) {
+                handleMovementInput();
+            }
+        }
+        
+        function handleKeyUp(event) {
+            let keyReleased = false;
+            switch(event.code) {
+                case 'ArrowUp':
+                    if (movementKeys.up) {
+                        movementKeys.up = false;
+                        keyReleased = true;
+                    }
+                    break;
+                case 'ArrowDown':
+                    if (movementKeys.down) {
+                        movementKeys.down = false;
+                        keyReleased = true;
+                    }
+                    break;
+                case 'ArrowLeft':
+                    if (movementKeys.left) {
+                        movementKeys.left = false;
+                        keyReleased = true;
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (movementKeys.right) {
+                        movementKeys.right = false;
+                        keyReleased = true;
+                    }
+                    break;
+            }
+            
+            if (keyReleased) {
+                handleMovementInput();
+            }
+        }
+        
+        // No JavaScript needed for help modal anymore - using CSS hover
+        
+        // Initialize the game
+        function init() {
+            // Set initial connection status
+            updateConnectionStatus(false);
+            
+            // Set up canvas size
+            resizeCanvas();
+            
+            // Handle window resize
+            window.addEventListener('resize', resizeCanvas);
+            
+            // Add keyboard event listeners for movement
+            document.addEventListener('keydown', handleKeyDown);
+            document.addEventListener('keyup', handleKeyUp);
+            
+            // Load the world map image
+            worldImage.onload = function() {
+                console.log('World map loaded:', worldImage.width + 'x' + worldImage.height);
+                drawWorld();
+                
+                // Small delay to ensure DOM is ready
+                setTimeout(() => {
+                    // Connect to game server after world map is loaded
+                    connectToServer();
+                }, 100);
+            };
+            
+            worldImage.onerror = function() {
+                console.error('Failed to load world map image');
+            };
+            
+            worldImage.src = 'world.jpg';
+        }
+        
+        // Start the game when the page loads
+        window.addEventListener('load', init);
+    </script>
+</body>
+</html>
